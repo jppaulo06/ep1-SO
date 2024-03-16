@@ -7,8 +7,12 @@
 #include <curses.h>
 #include <unistd.h>
 #include <string.h>
+#include <time.h>
 
-#define DEBUG_MODE 0
+#include <readline/readline.h>
+#include <readline/history.h>
+
+#define DEBUG_MODE 1
 
 #define print_info(info, ...) \
 	do { \
@@ -25,7 +29,6 @@
 		perror(error_message); \
 	} while(0)
 
-
 #define TRUE 1
 #define FALSE 0
 
@@ -35,121 +38,146 @@
 #define i32 int
 #define i64 long long
 
-#define MAX_USERNAME_SIZE ((size_t)32)
-#define MAX_ARGS_SIZE ((size_t)32)
+#define MAX_USERNAME_SIZE ((size_t)128)
+#define MAX_PROMPT_SIZE (MAX_USERNAME_SIZE + (size_t)128)
+#define MAX_ARGS_SIZE ((size_t)128)
 
-#define DEFAULT_COMMAND 0x2
-#define CD_COMMAND 0x4
-#define RM_COMMAND 0x8
-#define UNAME_A_COMMAND 0x16
+#define BUILT_IN_COMMAND ((u32)1)
+#define DEFAULT_COMMAND ((u32)2)
+#define CD_COMMAND ((u32)4)
+#define RM_COMMAND ((u32)8)
+#define UNAME_A_COMMAND ((u32)16)
 
-char username[MAX_USERNAME_SIZE] = {};
-char* args[MAX_ARGS_SIZE] = {};
 char* err_msg = NULL;
 
-int read_command(char** command) {
-	size_t command_buffer_size = 0;
-	int ret = getline(command, &command_buffer_size, stdin);
+int get_username(char* username) {
+	uid_t sys_uid = getuid();
+	char* line = NULL;
+	size_t line_size = 0;
+	FILE* passwd = fopen("/etc/passwd", "r");
 
-	if(ret < 0)
-		return -1;
+	while(getline(&line, &line_size, passwd) != -1) {
+		char* user = strtok(line, ":");
+		char* pass = strtok(NULL, ":");
+		char* uid = strtok(NULL, ":");
 
-	/* ret - 1 because of new line */
-	(*command)[ret - 1] = '\0';
+		if(sys_uid == atoi(uid)) {
+			if(strlen(user) >= MAX_USERNAME_SIZE) {
+				err_msg = "Username too long";
+				return -1;
+			}
+			strcpy(username, user);
+			return 0;
+		}
+	}
+	return -1;
+}
 
-	print_info("Read command line: %s\n", *command);
-
+int build_prompt(char* prompt) {
+	char username[MAX_USERNAME_SIZE] = {};
+	int ret = get_username(username);
+	if (ret) {
+		if(!err_msg)
+			err_msg = "Could not get username";
+		return ret;
+	}
+	time_t t = time(NULL);
+	struct tm tm = *localtime(&t);
+	ret = snprintf(prompt, MAX_PROMPT_SIZE, "%s [%d:%d:%d]: ", username, tm.tm_hour, tm.tm_min, tm.tm_sec);
+	if(ret < 0) {
+		err_msg = "Could not build prompt";
+		return ret;
+	}
 	return 0;
 }
 
-int parse_builtin_command(char* received_command, const char* builtin_command, char** args) {
+int read_command_line(char** command_line, char* prompt) {
+	size_t command_buffer_size = 0;
 
-	while(*received_command != '\0' && *builtin_command != '\0') {
-		if(*received_command != *builtin_command) {
-			return FALSE;
-		}
-		received_command++;
-		builtin_command++;
-	}
+	/* TODO: Configure History */
+	*command_line = readline(prompt);
 
-	if(args != NULL) {
-		*received_command = '\0';
-		*args = received_command + 1;
-	}
+	if(!command_line)
+		return -1;
 
-	return TRUE;
-}
+	print_info("Read command line: %s\n", *command_line);
 
-void parse_default_command(char* received_command, char** args) {
-	while(*received_command != '\0' && *received_command != ' ') {
-		received_command++;
-	}
-	if (*received_command != '\0' && args != NULL) {
-		*received_command = '\0';
-		*args = received_command + 1;
-	}
+	return 0;
 }
 
 void build_args(char* command, char** args) {
 	char* new_arg = NULL;
 	int built_args = 0;
-	argsv[built_args] = command;
-	while(arg = strtok(NULL, " ") != NULL && built_args < MAX_ARGS_SIZE - 1) {
+
+	args[built_args] = command;
+	built_args++;
+
+	while((new_arg = strtok(NULL, " ")) != NULL && built_args < MAX_ARGS_SIZE - 1) {
 		args[built_args] = new_arg;
 		built_args++;
 	}
-	built_args[built_args] = NULL;
+
+	args[built_args] = NULL;
 }
 
-void parse_command(char* command, char** args, u32 *command_flags) {
-	command = strtok(command, " ");
-	if (strcmp(command, "cd") == 0) {
-		*command_flags |= CD_COMMAND;
-	} else if (strcmp(command, "rm") == 0) {
-		*command_flags |= RM_COMMAND;
-	} else if (strcmp(command, "uname -a") == 0) {
-		*command_flags |= UNAME_A_COMMAND;
+void parse_command(char* command_line, char** command, char** args, u32 *command_flags) {
+	*command = strtok(command_line, " ");
+	build_args(*command, args);
+
+	if (strcmp(*command, "cd") == 0) {
+		*command_flags |= CD_COMMAND | BUILT_IN_COMMAND;
+	} else if (strcmp(*command, "rm") == 0) {
+		*command_flags |= RM_COMMAND | BUILT_IN_COMMAND;
+	} else if (strcmp(*command, "uname") == 0 && args[1] && strcmp(args[1], "-a") == 0) {
+		*command_flags |= UNAME_A_COMMAND | BUILT_IN_COMMAND;
 	} else {
-		parse_default_command(command, args);
 		*command_flags |= DEFAULT_COMMAND;
 	}
-	build_args(command, args);
 }
 
-int execute_command(u32 command_flags, char* command, char* args) {
+int _execute_command(u32 command_flags, char* command, char** args) {
 	int ret = 0;
 
-	switch (command_flags) {
-		case CD_COMMAND :
-			/* TODO: replace this with sycall */
-			print_info("CD to dir %s\n", args);
-			ret = chdir(args);
+	if (DEBUG_MODE) {
+		print_info("Executing command %s with args\n", command, args);
+		int i = 0;
+		while(args[i]) {
+			print_info("arg %d: %s\n", i, args[i]);
+			i++;
+		}
+	}
+
+	print_info("Command Flags: %d\n", command_flags);
+
+	switch (command_flags & ~BUILT_IN_COMMAND) {
+		case CD_COMMAND:
+			print_info("Executing built-in cd command\n");
+			ret = chdir(args[1]);
 			if(ret) {
 				err_msg = "Could not execute cd command";
 				ret = -1;
 			}
 			break;
 		case RM_COMMAND:
-			/* TODO: replace this with sycall */
-			print_info("Removing file %s\n", args);
-			ret = remove(args);
+			/* TODO: replace this with syscall */
+			print_info("Executing built-in rm command\n");
+			ret = remove(args[1]);
 			if(ret) {
 				err_msg = "Could not execute remove command";
 				ret = -1;
 			}
 			break;
 		case UNAME_A_COMMAND:
-			/* TODO: replace this with sycall */
-			print_info("Executing uname -a\n", args);
-			ret = execlp("/usr/bin/uname", "uname", "-a", NULL);
+			/* TODO: replace this with syscall */
+			print_info("Executing built-in uname -a command\n");
+			ret = execvp("/usr/bin/uname", args);
 			if(ret) {
 				err_msg = "Could not execute uname -a command";
 				ret = -1;
 			}
 			break;
 		default:
-			print_info("Executing command %s with args %s\n", command, args);
-			ret = execl(command, command, args, NULL);
+			ret = execvp(command, args);
 			if(ret) {
 				err_msg = "Could not execute command";
 				ret =  -1;
@@ -160,47 +188,54 @@ int execute_command(u32 command_flags, char* command, char* args) {
 	return ret;
 }
 
-int main(int argsc, char *argsv[])
-{
-	i32 ret = 0;
+int execute_command(u32 command_flags, char* command, char** args) {
+	int ret = 0;
+	ret = _execute_command(command_flags, command, args);
 
-	char* command = NULL;
-	char* args = NULL;
-
-	u32 command_flags = 0;
-
-	/* TODO: replace this with syscall */
-	ret = getlogin_r(username, MAX_USERNAME_SIZE);
-
-	if (ret) {
-		err_msg = "Could not get username";
-		goto error;
+	if(!err_msg && ret) {
+		err_msg = "Could not execute command";
+		print_error(err_msg);
 	}
 
-	while(1) {
-		printf("%s@new-shell:~$ ", username);
+	free(command);
+	return ret;
 
-		/* TODO: use history commands */
-		ret = read_command(&command);
+}
+
+int main()
+{
+	int ret = 0;
+
+	char prompt[MAX_PROMPT_SIZE] = {};
+
+	char* command_line = NULL;
+	char* command = NULL;
+
+	char* args[MAX_ARGS_SIZE] = {};
+
+	while(1) {
+		u32 command_flags = 0;
+
+		ret = build_prompt(prompt);
+		if(ret)
+			goto error;
+
+		ret = read_command_line(&command_line, prompt);
 
 		if(ret) {
-			err_msg = "Could not read command";
+			err_msg = "Could not read command line";
 			goto error;
 		}
 
+		parse_command(command_line, &command, args, &command_flags);
+
+		if(command_flags & BUILT_IN_COMMAND) {
+			execute_command(command_flags, command, args);
+			continue;
+		}
+
 		if(fork() == 0) {
-			parse_command(command, &args, &command_flags);
 			ret = execute_command(command_flags, command, args);
-
-			if(ret)
-				err_msg = "Could not execute command";
-
-			if (command)
-				free(command);
-
-			if(ret)
-				print_error(err_msg);
-
 			return ret;
 		}
 
