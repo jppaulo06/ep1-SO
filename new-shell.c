@@ -29,14 +29,8 @@
 		perror(error_message); \
 	} while(0)
 
-#define TRUE 1
-#define FALSE 0
-
 #define u32 uint32_t
 #define u64 uint64_t
-
-#define i32 int
-#define i64 long long
 
 #define MAX_USERNAME_SIZE ((size_t)128)
 #define MAX_PROMPT_SIZE (MAX_USERNAME_SIZE + (size_t)128)

@@ -1,0 +1,103 @@
+
+Parsear o arquivo de trace com vários processos registrados
+(Construir structs que representam cada processo)
+OBS: não precisa definir o que cada processo simulado vai fazer, então um loop infinito está ótimo.
+
+struct {
+	nome
+	tempo de relógio final (deadline)
+	tempo de relógio inicial
+	tempo em execução
+}
+
+Criar um array de structs COM BASE NO ALGORITMO SELECIONADO!!
+
+Round robin ordena com tempo inicial e vai andando pelos processos apos cada
+quantum
+
+Shortest job first ordena conforme o tempo de execução de cada processo e
+executa X processo inteiramente antes do último.
+
+Escalonamento com prioridade (não lembro, mas aparentemente é parecido com o
+round robin, mas dando quantuns confome deadline)
+
+Dado que temos várias structs salvas em um array, podemos iterar pelo array de
+acordo com o algoritmo que estivermos utilizando.
+
+Round Robin
+
+Todas as threads rodarão algum código dummy.
+Como queremos testar com vários processos simultaneamentes,
+é ideal que eu deva bolar uns 4 algoritmos diferentes que rodarão
+simultanemente.
+
+Mas, em geral, serão mais ou menos da seguinte maneira
+x = 1;
+while(x < 100000000) {
+	checkSuspend();
+	x = x + 1;
+	checkSuspend();
+}
+
+No caso do shortest job first, check suspend travará quando o tempo
+do deadline bater.
+
+Logo, é possível fazer uma única função de parser para todos!!! Assim como
+uma única função para rodar nas threads :)
+
+Por facilidade, criamos um único mutex. Entretanto, criaremos n conditions
+para os n processos simulados (um para cada). Eles ficarão travados em
+um pthread_cond_wait, esperando que o scheduler libere a condição.
+
+No caso de round robin, pausamos a thread n e reentramos na thread n + 1 (e
+assim por diante)
+
+O scheduler vai ter uma thread própria que vai ficar em loop, dormindo de
+quantum em quantum. Apenas acorda para parar a thread n e continuar a n + 1.
+
+CODIGO REFERENCIA 1
+
+void suspendMe()
+{ // tell the thread to suspend
+    pthread_mutex_lock(&m_SuspendMutex);
+    m_SuspendFlag = 1;
+    pthread_mutex_unlock(&m_SuspendMutex);
+}
+
+void resumeMe()
+{ // tell the thread to resume
+    pthread_mutex_lock(&m_SuspendMutex);
+    m_SuspendFlag = 0;
+    phtread_cond_broadcast(&m_ResumeCond);
+    pthread_mutex_unlock(&m_SuspendMutex);
+}
+
+void checkSuspend()
+{ // if suspended, suspend until resumed
+    pthread_mutex_lock(&m_SuspendMutex);
+    while (m_SuspendFlag != 0) pthread_cond_wait(&m_ResumeCond, &m_SuspendMutex);
+    pthread_mutex_unlock(&m_SuspendMutex);
+}
+
+CODIGO REFERENCIA 2
+
+T get_item()
+{
+    pthread_mutex_lock(&mutex);
+    while(qu.empty())
+        pthread_cond_wait(&cond, &mutex);
+    T ret = qu.front();
+    qu.pop();
+    pthread_mutex_unlock(&mutex);
+    return ret; // we got an item from a queue
+}
+
+void add_item(T x)
+{
+    pthread_mutex_lock(&mutex);
+    qu.push(x);
+    pthread_mutex_unlock(&mutex);
+    pthread_cond_signal(&cond);
+}
+
+
