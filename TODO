@@ -100,4 +100,33 @@ void add_item(T x)
     pthread_cond_signal(&cond);
 }
 
+Shortest first:
+
+Criemos uma lista de cores livres da máquina.
+Cria uma thread (1) que criará a thread (2) que vai rodar o programa
+A thread 1 vai pegar um core livre e liberar um condition. A thread main vai
+esperar essa condition ser satisfeita para passar para o próximo processo. Logo,
+se nenhum core estiver disponível, vai esperar. A thread 1 pode ficar num live
+wait, sem problema.
+depois que a thread 2 acabar, a thread 1 coloca o core como desocupado.
+
+Round robin
+Com a quantidade de cores (c) e processos (p), definimos
+x = min(cores, processos)
+Em que x vai ser a quantidade de processos rodando simultaneamente no roud
+robin. Lembre-se que no round robin temos um array de processos, então vamos
+iterar por essa lista de processos.
+Para cada iteração, pegamos os x novos processos, damos resumes (ou creates)
+nas threads, e depois sleep por um tempo fixo na thread principal. Depois que
+o sleep acabar, suspend.
+
+Priority
+O priority é basicamente um round robin com tempo de quantums diferentes.
+Isso é, para cada processo a ser resumido, esperamos um core específico que
+será liberado depois de um tempo determinado tempo.
+Lembre-se que o tempo de quantum está em ordem decrescente na lista.
+Seria interessante que para cada thread dessemos um sleep, mas isso seria um
+tanto trabalhoso. Acho que a forma mais simples seja fazer um live wait mesmo
+(esperando o determinado core ser liberado).
+
 
