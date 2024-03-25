@@ -129,4 +129,38 @@ Seria interessante que para cada thread dessemos um sleep, mas isso seria um
 tanto trabalhoso. Acho que a forma mais simples seja fazer um live wait mesmo
 (esperando o determinado core ser liberado).
 
+Fazer print bonitinho para ajudar a entender que está funcionando.
 
+Haverá uma thread separada rodando em loop para fazer os prints bonitinhos
+
+Faremos uma tabelinha:
+
+R significa que o processo está rodando (running)
+W é que o processo está esperando (Waiting)
+N é que o processo não está em tempo de rodar (init time maior)
+S para terminado com sucesso
+D para terminado depois do deadline
+C para terminado com cancel
+
+batata1 | batata2 | batata3 | batata4
+   R         W         W         W
+
+init = init time
+dl = deadline
+mbt = max burst time
+cbt = current burst time
+
+There are some differente possible states:
+R significa que o processo está rodando (running)
+W é que o processo está esperando (Waiting)
+N é que o processo não está em tempo de rodar (init time maior)
+S para terminado com sucesso
+D para terminado depois do deadline
+C para terminado com cancel
+
+name	|	init	|	dl	|	mbt	|	cbt	|	state	|
+batata1 |			|		|		|		|			|
+batata2 |			|		|		|		|			|
+batata3 |			|		|		|		|			|
+
+Time: x

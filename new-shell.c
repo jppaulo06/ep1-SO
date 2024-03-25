@@ -8,11 +8,12 @@
 #include <unistd.h>
 #include <string.h>
 #include <time.h>
+#include <sys/utsname.h>
 
 #include <readline/readline.h>
 #include <readline/history.h>
 
-#define DEBUG_MODE 1
+#define DEBUG_MODE 0
 
 #define print_info(info, ...) \
 	do { \
@@ -52,10 +53,10 @@ int get_username(char* username) {
 
 	while(getline(&line, &line_size, passwd) != -1) {
 		char* user = strtok(line, ":");
-		char* pass = strtok(NULL, ":");
+		strtok(NULL, ":");
 		char* uid = strtok(NULL, ":");
 
-		if(sys_uid == atoi(uid)) {
+		if(sys_uid == (uid_t)atoi(uid)) {
 			if(strlen(user) >= MAX_USERNAME_SIZE) {
 				err_msg = "Username too long";
 				return -1;
@@ -77,7 +78,7 @@ int build_prompt(char* prompt) {
 	}
 	time_t t = time(NULL);
 	struct tm tm = *localtime(&t);
-	ret = snprintf(prompt, MAX_PROMPT_SIZE, "%s [%d:%d:%d]: ", username, tm.tm_hour, tm.tm_min, tm.tm_sec);
+	ret = snprintf(prompt, MAX_PROMPT_SIZE, "%s [%02d:%02d:%02d]: ", username, tm.tm_hour, tm.tm_min, tm.tm_sec);
 	if(ret < 0) {
 		err_msg = "Could not build prompt";
 		return ret;
@@ -86,10 +87,8 @@ int build_prompt(char* prompt) {
 }
 
 int read_command_line(char** command_line, char* prompt) {
-	size_t command_buffer_size = 0;
-
-	/* TODO: Configure History */
 	*command_line = readline(prompt);
+	add_history(*command_line);
 
 	if(!command_line)
 		return -1;
@@ -101,7 +100,7 @@ int read_command_line(char** command_line, char* prompt) {
 
 void build_args(char* command, char** args) {
 	char* new_arg = NULL;
-	int built_args = 0;
+	size_t built_args = 0;
 
 	args[built_args] = command;
 	built_args++;
@@ -133,7 +132,7 @@ int _execute_command(u32 command_flags, char* command, char** args) {
 	int ret = 0;
 
 	if (DEBUG_MODE) {
-		print_info("Executing command %s with args\n", command, args);
+		print_info("Executing command %s with args\n", command);
 		int i = 0;
 		while(args[i]) {
 			print_info("arg %d: %s\n", i, args[i]);
@@ -153,25 +152,27 @@ int _execute_command(u32 command_flags, char* command, char** args) {
 			}
 			break;
 		case RM_COMMAND:
-			/* TODO: replace this with syscall */
 			print_info("Executing built-in rm command\n");
-			ret = remove(args[1]);
+			ret = unlink(args[1]);
 			if(ret) {
 				err_msg = "Could not execute remove command";
 				ret = -1;
 			}
 			break;
 		case UNAME_A_COMMAND:
-			/* TODO: replace this with syscall */
+			struct utsname uts;
+
 			print_info("Executing built-in uname -a command\n");
-			ret = execvp("/usr/bin/uname", args);
+			uname(&uts);
+			printf("%s %s %s %s %s GNU/Linux\n", uts.sysname, uts.nodename, uts.release, uts.version, uts.machine);
+
 			if(ret) {
 				err_msg = "Could not execute uname -a command";
 				ret = -1;
 			}
 			break;
 		default:
-			ret = execvp(command, args);
+			ret = execv(command, args);
 			if(ret) {
 				err_msg = "Could not execute command";
 				ret =  -1;
@@ -185,10 +186,8 @@ int _execute_command(u32 command_flags, char* command, char** args) {
 int execute_command(u32 command_flags, char* command, char** args) {
 	int ret = 0;
 	ret = _execute_command(command_flags, command, args);
-
-	if(!err_msg && ret) {
-		err_msg = "Could not execute command";
-		print_error(err_msg);
+	if(ret) {
+		printf("%s\n", err_msg ? err_msg : "Could not execute command\n");
 	}
 
 	free(command);
@@ -207,8 +206,11 @@ int main()
 
 	char* args[MAX_ARGS_SIZE] = {};
 
+	using_history();
+
 	while(1) {
 		u32 command_flags = 0;
+		pid_t child_pid = 0;
 
 		ret = build_prompt(prompt);
 		if(ret)
@@ -228,12 +230,12 @@ int main()
 			continue;
 		}
 
-		if(fork() == 0) {
+		if((child_pid = fork()) == 0) {
 			ret = execute_command(command_flags, command, args);
 			return ret;
 		}
 
-		wait(NULL);
+		waitpid(child_pid, NULL, 0);
 	}
 
 	return 0;

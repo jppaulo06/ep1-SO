@@ -17,7 +17,7 @@
  * =====================================
  */
 
-#define DEBUG_MODE 1
+#define DEBUG_MODE 0
 
 #define print_info(info, ...) \
 	do { \
@@ -38,15 +38,25 @@
 #define u64 uint64_t
 #define i64 int64_t
 
+#define RED   "\x1B[31m"
+#define GRN   "\x1B[32m"
+#define YEL   "\x1B[33m"
+#define BLU   "\x1B[34m"
+#define MAG   "\x1B[35m"
+#define CYN   "\x1B[36m"
+#define WHT   "\x1B[37m"
+#define RESET "\x1B[0m"
+
 #define MAX_PROCESSES 100
 #define MAX_PROCESS_NAME_SIZE 16
 #define MAX_TRACE_LINE_SIZE 200
 
-#define GENERAL_DEFAULT_QUANTUM 200000
+#define PRINT_WAIT_TIME_USEC 100000
 
+#define GENERAL_DEFAULT_QUANTUM 200000
 #define PRIORITY_START_QUANTUM_USEC 200000
 #define PRIORITY_QUANTUM_INCREMENT_USEC 200000
-#define ROUND_ROBIN_QUANTUM_USEC 10
+#define ROUND_ROBIN_QUANTUM_USEC 100000
 
 #define SEC_IN_USEC 1000000
 #define SEC_IN_NSEC 1000000000
@@ -58,6 +68,21 @@
  * STRUCTS & TYPEDEFS & ENUMS
  * =====================================
  */
+
+enum process_state {
+	READY,
+	RUNNING,
+	WAITING,
+	SUCCESS,
+	DEADLINE,
+	CANCELLED
+};
+
+enum algorithm {
+	SHORTEST_FIRST = 1,
+	ROUND_ROBIN = 2,
+	PRIORITY = 3
+};
 
 struct process {
 
@@ -79,14 +104,9 @@ struct process {
 	pthread_mutex_t* suspend_mutex;
 	pthread_cond_t condition;
 	u32 suspend_flag;
-};
 
-enum algorithm {
-	SHORTEST_FIRST = 1,
-	ROUND_ROBIN = 2,
-	PRIORITY = 3
+	enum process_state state;
 };
-
 
 /*
  * =====================================
@@ -99,6 +119,8 @@ enum algorithm scheduler_algorithm;
 pthread_mutex_t global_suspend_mutex;
 u32 num_processes = 0;
 u64 context_switchs = 0;
+pthread_t print_loop_thread;
+void* (*exec_function)(void*) = NULL;
 
 char* err_msg = NULL;
 
@@ -157,18 +179,29 @@ void resume_process(struct process *process) {
  * =====================================
  */
 
-void* default_function(void *arg)
-{
-	struct process *process = (struct process *)arg;
-	print_info("Thread %s started\n", process->name);
-	u64 counter = 0;
-	while (counter < 1000000000) {
-		check_suspend(process);
-		counter++;
+#define new_default_function(name, num) \
+	void* name(void *arg) { \
+		struct process *process = (struct process *)arg; \
+		print_info("Thread %s started\n", process->na##me); \
+		u64 counter = 0; \
+		while (counter < num) { \
+			check_suspend(process); \
+			counter++; \
+		} \
+		process->finished = 1; \
+		return NULL; \
 	}
-	process->finished = 1;
-	return NULL;
-}
+
+new_default_function(lovelace, 200000000)
+new_default_function(servine, 150000000)
+new_default_function(kernel, 120000000)
+new_default_function(batata, 100000000)
+new_default_function(jobs, 500000000)
+new_default_function(linus, 100000000)
+new_default_function(gnu, 50000000)
+new_default_function(guaxinim, 1000000)
+new_default_function(flusp, 500000)
+new_default_function(darksouls, 10000)
 
 /*
  * =====================================
@@ -205,6 +238,55 @@ int select_algorithm(char* alg) {
 	return 0;
 }
 
+void get_function_name(char* function_name, char* process_name) {
+	while(process_name[0] != '\0' && process_name[0] != '_' && process_name[0] != '\n') {
+		function_name[0] = process_name[0];
+		process_name++;
+		function_name++;
+	}
+	function_name[0] = '\0';
+}
+
+int define_exec_function(char* function_name) {
+
+	if(strcmp(function_name, "lovelace") == 0) {
+		exec_function = lovelace;
+	}
+	else if(strcmp(function_name, "servine") == 0) {
+		exec_function = lovelace;
+	}
+	else if(strcmp(function_name, "kernel") == 0) {
+		exec_function = kernel;
+	}
+	else if(strcmp(function_name, "batata") == 0) {
+		exec_function = batata;
+	}
+	else if(strcmp(function_name, "jobs") == 0) {
+		exec_function = jobs;
+	}
+	else if(strcmp(function_name, "linus") == 0) {
+		exec_function = linus;
+	}
+	else if(strcmp(function_name, "gnu") == 0) {
+		exec_function = gnu;
+	}
+	else if(strcmp(function_name, "guaxinim") == 0) {
+		exec_function = guaxinim;
+	}
+	else if(strcmp(function_name, "flusp") == 0) {
+		exec_function = flusp;
+	}
+	else if(strcmp(function_name, "darksouls") == 0) {
+		exec_function = darksouls;
+	}
+	else {
+		err_msg = "Invalid function name";
+		return -1;
+	}
+
+	return 0;
+}
+
 int process_init(struct process *process, char* name, char* deadline, char* start_time, char* burst_time) {
 	int ret = 0;
 
@@ -226,6 +308,7 @@ int process_init(struct process *process, char* name, char* deadline, char* star
 	process->suspend_flag = 0;
 	process->suspend_mutex = &global_suspend_mutex;
 	process->quantum_usec = GENERAL_DEFAULT_QUANTUM;
+	process->state = WAITING;
 
 	ret = pthread_cond_init(&process->condition, NULL);
 	if (ret != 0) {
@@ -256,6 +339,7 @@ int process_init(struct process *process, char* name, char* deadline, char* star
 
 int parse_trace_file(char* file_path) {
 	char line[MAX_TRACE_LINE_SIZE + 1];
+	char function_name[MAX_PROCESS_NAME_SIZE + 1];
 	FILE* file;
 	char* name;
 	char* deadline;
@@ -286,6 +370,14 @@ int parse_trace_file(char* file_path) {
 		if(!name || !deadline || !burst_time || !start_time) {
 			err_msg = "Invalid trace file";
 			ret = -1;
+			goto close_file;
+		}
+
+		get_function_name(function_name, name);
+
+		ret = define_exec_function(function_name);
+		if (ret != 0) {
+			err_msg = err_msg ? err_msg : "Error defining exec function";
 			goto close_file;
 		}
 
@@ -372,49 +464,67 @@ int create_process_thread(struct process *process, void* (*function)(void*)) {
 	return pthread_create(&process->thread, NULL, function, (void*)process);
 }
 
+u64 get_delta_time_usec(struct timeval time1, struct timeval time2) {
+	u64 delta_time_usec = 0;
+
+	if(time2.tv_sec == time1.tv_sec) {
+		delta_time_usec = time2.tv_usec - time1.tv_usec;
+	}
+	else {
+		delta_time_usec = (time2.tv_sec - time1.tv_sec - 1) * SEC_IN_USEC + (SEC_IN_USEC - time1.tv_usec) + time2.tv_usec;
+	}
+
+	return delta_time_usec;
+}
+
 int start_shortest_first_scheduler() {
 	int ret = 0;
 	struct process *process = NULL;
 	void* process_ret = NULL;
 
 	struct timeval scheduler_start_time = {};
-	struct timeval current_time = {};
+	struct timeval time1 = {};
+	struct timeval time2 = {};
 
 	struct timespec wait_time_timespec = {};
 	i64 wait_time_usec = 0;
+	u64 delta_time_usec = 0;
 
 	gettimeofday(&scheduler_start_time, NULL);
 
 	for (u32 i = 0; i < num_processes; i++) {
 		process = &processes[i];
 
-		ret = gettimeofday(&current_time, NULL);
+		ret = gettimeofday(&time1, NULL);
 		if (ret != 0) {
 			err_msg = "Error getting time";
 			return ret;
 		}
 
-		wait_time_usec = SEC_IN_USEC * (process->start_time_sec - (current_time.tv_sec - scheduler_start_time.tv_sec)) - current_time.tv_usec;
+		wait_time_usec = SEC_IN_USEC * (process->start_time_sec - (time1.tv_sec - scheduler_start_time.tv_sec)) - time1.tv_usec;
 
 		if(wait_time_usec > 0) {
 			print_info("Waiting for %ld usec\n", wait_time_usec);
 			usleep(wait_time_usec);
 		}
 
-		ret = create_process_thread(process, default_function);
+		ret = create_process_thread(process, exec_function);
 		if(ret != 0) {
 			err_msg = "Error creating process thread";
 			return ret;
 		}
 
-		ret = gettimeofday(&current_time, NULL);
+		process->real_start_time = time1.tv_sec - scheduler_start_time.tv_sec;
+		process->state = RUNNING;
+
+		ret = gettimeofday(&time1, NULL);
 		if (ret != 0) {
 			err_msg = "Error getting time";
 			return ret;
 		}
 
-		wait_time_timespec.tv_sec = current_time.tv_sec + process->burst_time_sec;
-		wait_time_timespec.tv_nsec = current_time.tv_usec * USEC_IN_NSEC;
+		wait_time_timespec.tv_sec = time1.tv_sec + process->burst_time_sec;
+		wait_time_timespec.tv_nsec = time1.tv_usec * USEC_IN_NSEC;
 
 		print_info("Defined processing time of %d secs. Limit time will be " \
 					"time %ld secs and %ld nsecs\n",
@@ -429,19 +539,25 @@ int start_shortest_first_scheduler() {
 		 */
 		ret = pthread_timedjoin_np(process->thread, &process_ret, &wait_time_timespec);
 
-		gettimeofday(&current_time, NULL);
+		gettimeofday(&time2, NULL);
+
+		delta_time_usec = get_delta_time_usec(time1, time2);
+		process->current_burst_time_usec += delta_time_usec;
 
 		print_info("Process %s finished in time %ld secs and %ld nsecs\n",
 					process->name,
-					current_time.tv_sec - scheduler_start_time.tv_sec,
-					current_time.tv_usec * USEC_IN_NSEC);
+					time2.tv_sec - scheduler_start_time.tv_sec,
+					time2.tv_usec * USEC_IN_NSEC);
 
-		if (ret == 0 && current_time.tv_sec - scheduler_start_time.tv_sec < process->deadline_sec) {
+		if (ret == 0 && time2.tv_sec - scheduler_start_time.tv_sec < process->deadline_sec) {
 			print_info("Process %s finished in time :)\n", process->name);
+			process->state = SUCCESS;
 		}
 		else if(ret == 0) {
 			print_info("Process %s finished but not following deadline :(\n",
 						process->name);
+
+			process->state = DEADLINE;
 		}
 		else {
 			print_info("Process %s didn't finish in time :(\n", process->name);
@@ -450,8 +566,12 @@ int start_shortest_first_scheduler() {
 				err_msg = "Error cancelling process";
 				return -1;
 			}
+
+			process->state = CANCELLED;
 		}
 
+		context_switchs += 1;
+		process->real_end_time = time2.tv_sec - scheduler_start_time.tv_sec;
 		process->thread = 0;
 	}
 
@@ -472,19 +592,6 @@ int process_exploded_burst_time(struct process *process) {
 
 int process_has_finished(struct process *process) {
 	return process->finished;
-}
-
-u64 get_delta_time_usec(struct timeval time1, struct timeval time2) {
-	u64 delta_time_usec = 0;
-
-	if(time2.tv_sec == time1.tv_sec) {
-		delta_time_usec = time2.tv_usec - time1.tv_usec;
-	}
-	else {
-		delta_time_usec = (time2.tv_sec - time1.tv_sec - 1) * SEC_IN_USEC + (SEC_IN_USEC - time1.tv_usec) + time2.tv_usec;
-	}
-
-	return delta_time_usec;
 }
 
 int start_round_robin_scheduler() {
@@ -523,13 +630,15 @@ int start_round_robin_scheduler() {
 			resume_process(process);
 		}
 		else {
-			ret = create_process_thread(process, default_function);
+			ret = create_process_thread(process, exec_function);
 			process->real_start_time = scheduler_seconds;
 			if (ret) {
 				err_msg = "Error creating process thread";
 				return ret;
 			}
 		}
+
+		process->state = RUNNING;
 
 		usleep(process->quantum_usec);
 
@@ -555,14 +664,17 @@ int start_round_robin_scheduler() {
 					process->deadline_sec);
 
 			if(scheduler_seconds < process->deadline_sec) {
+				process->state = SUCCESS;
 				print_info("Process %s finished in time :)\n", process->name);
 			}
 			else {
+				process->state = DEADLINE;
 				print_info("Process %s finished but not following deadline :(\n", process->name);
 			}
 
 			process->thread = 0;
 			process->real_end_time = scheduler_seconds;
+			process->finished = 1;
 			finished_processes += 1;
 		}
 		else if(process_exploded_burst_time(process)) {
@@ -573,12 +685,14 @@ int start_round_robin_scheduler() {
 				return ret;
 			}
 
+			process->state = CANCELLED;
 			process->thread = 0;
 			process->real_end_time = scheduler_seconds;
 			process->finished = 1;
 			finished_processes += 1;
 		}
 		else {
+			process->state = READY;
 			suspend_process(process);
 		}
 
@@ -591,10 +705,133 @@ int start_round_robin_scheduler() {
 	return 0;
 }
 
+void clear_screen(u32 *num_lines) {
+	/* Clear current line */
+	printf("\33[2K\r");
+
+	/* Clear previous lines */
+	while(*num_lines > 0) {
+		printf("\033[A\33[2K\r");
+		*num_lines -= 1;
+	}
+}
+
+void* print_loop(void* arg) {
+	(void) arg;
+	u64 time0;
+	u32 num_lines = 0;
+	char state;
+
+	printf(GRN "\n====================== SCHEDULER =====================\n" RESET);
+
+	printf(CYN "\n  SCHEDULER ALGORITHM: %s\n" \
+		   "  MAX PROCESSES: %d\n" \
+		   "  MAX PROCESS NAME SIZE: %d\n" \
+		   "  MAX TRACE LINE SIZE: %d\n" \
+		   "  TABLE PRINT WAIT TIME: %d\n" RESET,
+		   scheduler_algorithm == SHORTEST_FIRST ? "Shortest First" :
+		   scheduler_algorithm == ROUND_ROBIN ? "Round Robin" :
+		   scheduler_algorithm == PRIORITY ? "Priority" : "?",
+		   PRINT_WAIT_TIME_USEC,
+		   MAX_PROCESS_NAME_SIZE,
+		   MAX_PROCESS_NAME_SIZE,
+		   MAX_PROCESSES);
+
+	if(scheduler_algorithm == PRIORITY) {
+		printf(CYN "  PRIORITY START QUANTUM: %d\n" \
+			   "  PRIORITY QUANTUM INCREMENT: %d\n" RESET,
+			   PRIORITY_START_QUANTUM_USEC,
+			   PRIORITY_QUANTUM_INCREMENT_USEC);
+	}
+	else if(scheduler_algorithm == ROUND_ROBIN) {
+		printf(CYN "  ROUND ROBIN QUANTUM: %d\n" RESET, ROUND_ROBIN_QUANTUM_USEC);
+	}
+
+	printf(MAG "\n====================== DICTIONARY ======================\n\n" \
+			YEL "  Name: process name\n" \
+			"  Dead: Deadline time\n" \
+			"  MaxBT: Maximum burst time\n" \
+			"  CurBT: Current burst time\n" \
+			"  State: State of the processes. The possible ones are:\n" \
+			"    - R: The process is running\n" \
+			"    - r: The process is ready to run\n" \
+			"    - W: The process is waiting for the init time\n" \
+			"    - S: The process has succesfully finished\n" \
+			"    - D: The process has finished after the Deadline\n" \
+			"    - C: The process has been cancelled because burst time has exploded\n" RESET \
+		  );
+
+
+	printf(RED "\n======================== TABLE =========================\n\n" RESET);
+
+	time0 = time(NULL);
+
+	while(1) {
+		u64 time1 = time(NULL);
+
+		for(u32 p = 0; p < num_processes; p++) {
+			if(processes[p].state == WAITING && processes[p].start_time_sec < time1 - time0) {
+				processes[p].state = READY;
+			}
+		}
+
+		printf(CYN "  TIME: %lu\n" RESET \
+			   "  _______________________________________________________\n" \
+			   "  | Name	| Init	| Dead	| MaxBT	| CurBT	| State	|\n",
+			   time1 - time0);
+
+		num_lines += 3;
+
+		for(u32 p = 0; p < num_processes; p++) {
+			switch (processes[p].state) {
+				case READY:
+					state = 'r';
+					break;
+				case RUNNING:
+					state = 'R';
+					break;
+				case WAITING:
+					state = 'W';
+					break;
+				case SUCCESS:
+					state = 'S';
+					break;
+				case DEADLINE:
+					state = 'D';
+					break;
+				case CANCELLED:
+					state = 'C';
+					break;
+			}
+			printf("  | %s	| %d	| %d	| %d	| %d	| %c	|\n",
+					processes[p].name,
+					processes[p].start_time_sec,
+					processes[p].deadline_sec,
+					processes[p].burst_time_sec,
+					(u32)(processes[p].current_burst_time_usec / SEC_IN_USEC),
+					state);
+			num_lines++;
+		}
+
+		printf("  -------------------------------------------------------\n\n");
+		num_lines += 2;
+
+		usleep(PRINT_WAIT_TIME_USEC);
+
+		fflush(stdout);
+
+		clear_screen(&num_lines);
+	}
+}
+
 int start_scheduler() {
 	int ret = 0;
 
 	print_info("Starting scheduler\n");
+
+	if(!DEBUG_MODE) {
+		pthread_create(&print_loop_thread, NULL, print_loop, NULL);
+	}
 
 	switch (scheduler_algorithm) {
 		case SHORTEST_FIRST:
@@ -612,7 +849,11 @@ int start_scheduler() {
 			}
 			break;
 		case PRIORITY:
-			/* TODO: create priority algorithm */
+			start_round_robin_scheduler();
+			if (ret != 0) {
+				err_msg = err_msg ? err_msg : "Error running round robin scheduler";
+				return ret;
+			}
 			break;
 	}
 
@@ -694,6 +935,10 @@ int main(int argc, char *argv[])
 		err_msg = err_msg ? err_msg : "Error saving output file";
 		goto error;
 	}
+
+	/* This is necessary to always print the last table before exiting */
+	if(!DEBUG_MODE)
+		usleep(PRINT_WAIT_TIME_USEC * 2);
 
 	return 0;
 
