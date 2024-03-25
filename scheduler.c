@@ -34,6 +34,18 @@
 		perror(error_message); \
 	} while(0)
 
+#define NEW_EXEC_FUNCTION(name, num) \
+	void* name(void *arg) { \
+		struct process *process = (struct process *)arg; \
+		u64 counter = 0; \
+		while (counter < num) { \
+			check_suspend(process); \
+			counter++; \
+		} \
+		process->finished = 1; \
+		return NULL; \
+	}
+
 #define u32 uint32_t
 #define u64 uint64_t
 #define i64 int64_t
@@ -105,6 +117,8 @@ struct process {
 	pthread_cond_t condition;
 	u32 suspend_flag;
 
+	void* (*exec_function)(void*);
+
 	enum process_state state;
 };
 
@@ -120,7 +134,6 @@ pthread_mutex_t global_suspend_mutex;
 u32 num_processes = 0;
 u64 context_switchs = 0;
 pthread_t print_loop_thread;
-void* (*exec_function)(void*) = NULL;
 
 char* err_msg = NULL;
 
@@ -179,29 +192,16 @@ void resume_process(struct process *process) {
  * =====================================
  */
 
-#define new_default_function(name, num) \
-	void* name(void *arg) { \
-		struct process *process = (struct process *)arg; \
-		print_info("Thread %s started\n", process->na##me); \
-		u64 counter = 0; \
-		while (counter < num) { \
-			check_suspend(process); \
-			counter++; \
-		} \
-		process->finished = 1; \
-		return NULL; \
-	}
-
-new_default_function(lovelace, 200000000)
-new_default_function(servine, 150000000)
-new_default_function(kernel, 120000000)
-new_default_function(batata, 100000000)
-new_default_function(jobs, 500000000)
-new_default_function(linus, 100000000)
-new_default_function(gnu, 50000000)
-new_default_function(guaxinim, 1000000)
-new_default_function(flusp, 500000)
-new_default_function(darksouls, 10000)
+NEW_EXEC_FUNCTION(jobs, 500000000)
+NEW_EXEC_FUNCTION(lovelace, 200000000)
+NEW_EXEC_FUNCTION(servine, 150000000)
+NEW_EXEC_FUNCTION(kernel, 120000000)
+NEW_EXEC_FUNCTION(batata, 100000000)
+NEW_EXEC_FUNCTION(linus, 100000000)
+NEW_EXEC_FUNCTION(gnu, 50000000)
+NEW_EXEC_FUNCTION(guaxinim, 1000000)
+NEW_EXEC_FUNCTION(flusp, 500000)
+NEW_EXEC_FUNCTION(darksouls, 10000)
 
 /*
  * =====================================
@@ -247,37 +247,37 @@ void get_function_name(char* function_name, char* process_name) {
 	function_name[0] = '\0';
 }
 
-int define_exec_function(char* function_name) {
+int define_exec_function(struct process* process, char* function_name) {
 
 	if(strcmp(function_name, "lovelace") == 0) {
-		exec_function = lovelace;
+		process->exec_function = lovelace;
 	}
 	else if(strcmp(function_name, "servine") == 0) {
-		exec_function = lovelace;
+		process->exec_function = servine;
 	}
 	else if(strcmp(function_name, "kernel") == 0) {
-		exec_function = kernel;
+		process->exec_function = kernel;
 	}
 	else if(strcmp(function_name, "batata") == 0) {
-		exec_function = batata;
+		process->exec_function = batata;
 	}
 	else if(strcmp(function_name, "jobs") == 0) {
-		exec_function = jobs;
+		process->exec_function = jobs;
 	}
 	else if(strcmp(function_name, "linus") == 0) {
-		exec_function = linus;
+		process->exec_function = linus;
 	}
 	else if(strcmp(function_name, "gnu") == 0) {
-		exec_function = gnu;
+		process->exec_function = gnu;
 	}
 	else if(strcmp(function_name, "guaxinim") == 0) {
-		exec_function = guaxinim;
+		process->exec_function = guaxinim;
 	}
 	else if(strcmp(function_name, "flusp") == 0) {
-		exec_function = flusp;
+		process->exec_function = flusp;
 	}
 	else if(strcmp(function_name, "darksouls") == 0) {
-		exec_function = darksouls;
+		process->exec_function = darksouls;
 	}
 	else {
 		err_msg = "Invalid function name";
@@ -375,7 +375,9 @@ int parse_trace_file(char* file_path) {
 
 		get_function_name(function_name, name);
 
-		ret = define_exec_function(function_name);
+		print_info("Function name: %s\n", function_name);
+
+		ret = define_exec_function(&processes[num_processes], function_name);
 		if (ret != 0) {
 			err_msg = err_msg ? err_msg : "Error defining exec function";
 			goto close_file;
@@ -459,9 +461,9 @@ void apply_priorities() {
 	print_info("Quanta defined\n");
 }
 
-int create_process_thread(struct process *process, void* (*function)(void*)) {
+int create_process_thread(struct process *process) {
 	print_info("============= Starting process %s =============\n", process->name);
-	return pthread_create(&process->thread, NULL, function, (void*)process);
+	return pthread_create(&process->thread, NULL, process->exec_function, (void*)process);
 }
 
 u64 get_delta_time_usec(struct timeval time1, struct timeval time2) {
@@ -487,13 +489,19 @@ int start_shortest_first_scheduler() {
 	struct timeval time2 = {};
 
 	struct timespec wait_time_timespec = {};
-	i64 wait_time_usec = 0;
 	u64 delta_time_usec = 0;
+	u32 finished_processes = 0;
+	u32 i = 0;
 
 	gettimeofday(&scheduler_start_time, NULL);
 
-	for (u32 i = 0; i < num_processes; i++) {
+	while(finished_processes < num_processes) {
 		process = &processes[i];
+
+		if(process->finished) {
+			i = (i + 1) % num_processes;
+			continue;
+		}
 
 		ret = gettimeofday(&time1, NULL);
 		if (ret != 0) {
@@ -501,14 +509,13 @@ int start_shortest_first_scheduler() {
 			return ret;
 		}
 
-		wait_time_usec = SEC_IN_USEC * (process->start_time_sec - (time1.tv_sec - scheduler_start_time.tv_sec)) - time1.tv_usec;
-
-		if(wait_time_usec > 0) {
-			print_info("Waiting for %ld usec\n", wait_time_usec);
-			usleep(wait_time_usec);
+		if (!process->finished &&
+			process->start_time_sec > (time1.tv_sec - scheduler_start_time.tv_sec)) {
+			i = (i + 1) % num_processes;
+			continue;
 		}
 
-		ret = create_process_thread(process, exec_function);
+		ret = create_process_thread(process);
 		if(ret != 0) {
 			err_msg = "Error creating process thread";
 			return ret;
@@ -571,8 +578,11 @@ int start_shortest_first_scheduler() {
 		}
 
 		context_switchs += 1;
+		finished_processes += 1;
 		process->real_end_time = time2.tv_sec - scheduler_start_time.tv_sec;
 		process->thread = 0;
+
+		i = 0;
 	}
 
 	return ret;
@@ -630,7 +640,7 @@ int start_round_robin_scheduler() {
 			resume_process(process);
 		}
 		else {
-			ret = create_process_thread(process, exec_function);
+			ret = create_process_thread(process);
 			process->real_start_time = scheduler_seconds;
 			if (ret) {
 				err_msg = "Error creating process thread";
