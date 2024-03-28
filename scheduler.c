@@ -563,6 +563,7 @@ int start_shortest_first_scheduler() {
 			}
 
 			process->state = CANCELLED;
+			process->finished = 1;
 			finished_processes += 1;
 		}
 
