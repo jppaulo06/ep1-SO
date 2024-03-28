@@ -19,6 +19,11 @@
 
 #define DEBUG_MODE 0
 
+#define GENERAL_DEFAULT_QUANTUM 20000
+#define PRIORITY_MAX_QUANTUM_USEC 100000
+
+#define PRINT_WAIT_TIME_USEC GENERAL_DEFAULT_QUANTUM
+
 #define print_info(info, ...) \
 	do { \
 		if(DEBUG_MODE) { \
@@ -59,16 +64,9 @@
 #define WHT   "\x1B[37m"
 #define RESET "\x1B[0m"
 
-#define MAX_PROCESSES 100
+#define MAX_PROCESSES 600
 #define MAX_PROCESS_NAME_SIZE 16
 #define MAX_TRACE_LINE_SIZE 200
-
-#define PRINT_WAIT_TIME_USEC 100000
-
-#define GENERAL_DEFAULT_QUANTUM 200000
-#define PRIORITY_START_QUANTUM_USEC 200000
-#define PRIORITY_QUANTUM_INCREMENT_USEC 200000
-#define ROUND_ROBIN_QUANTUM_USEC 100000
 
 #define SEC_IN_USEC 1000000
 #define SEC_IN_NSEC 1000000000
@@ -134,6 +132,7 @@ pthread_mutex_t global_suspend_mutex;
 u32 num_processes = 0;
 u64 context_switchs = 0;
 pthread_t print_loop_thread;
+u32 SILENT_MODE = 0;
 
 char* err_msg = NULL;
 
@@ -195,13 +194,13 @@ void resume_process(struct process *process) {
 NEW_EXEC_FUNCTION(jobs, 500000000)
 NEW_EXEC_FUNCTION(lovelace, 200000000)
 NEW_EXEC_FUNCTION(servine, 150000000)
-NEW_EXEC_FUNCTION(kernel, 120000000)
-NEW_EXEC_FUNCTION(batata, 100000000)
-NEW_EXEC_FUNCTION(linus, 100000000)
-NEW_EXEC_FUNCTION(gnu, 50000000)
-NEW_EXEC_FUNCTION(guaxinim, 1000000)
-NEW_EXEC_FUNCTION(flusp, 500000)
-NEW_EXEC_FUNCTION(darksouls, 10000)
+NEW_EXEC_FUNCTION(kernel, 100000000)
+NEW_EXEC_FUNCTION(batata, 80000000)
+NEW_EXEC_FUNCTION(linus, 50000000)
+NEW_EXEC_FUNCTION(gnu, 10000000)
+NEW_EXEC_FUNCTION(guaxinim, 5000000)
+NEW_EXEC_FUNCTION(flusp, 1000000)
+NEW_EXEC_FUNCTION(darksouls, 500000)
 
 /*
  * =====================================
@@ -287,7 +286,7 @@ int define_exec_function(struct process* process, char* function_name) {
 	return 0;
 }
 
-int process_init(struct process *process, char* name, char* deadline, char* start_time, char* burst_time) {
+int process_init(struct process *process, char* name, char* function_name, char* deadline, char* start_time, char* burst_time) {
 	int ret = 0;
 
 	if(!isnumber(deadline) || !isnumber(start_time) || !isnumber(burst_time)) {
@@ -305,10 +304,23 @@ int process_init(struct process *process, char* name, char* deadline, char* star
 	process->start_time_sec = atoi(start_time);
 	process->burst_time_sec = atoi(burst_time);
 
+	process->thread = 0;
 	process->suspend_flag = 0;
 	process->suspend_mutex = &global_suspend_mutex;
-	process->quantum_usec = GENERAL_DEFAULT_QUANTUM;
+	process->finished = 0;
+
 	process->state = WAITING;
+	process->current_burst_time_usec = 0;
+	process->real_start_time = 0;
+	process->real_end_time = 0;
+
+	process->quantum_usec = GENERAL_DEFAULT_QUANTUM;
+
+	ret = define_exec_function(&processes[num_processes], function_name);
+	if (ret != 0) {
+		err_msg = err_msg ? err_msg : "Error defining exec function";
+		return ret;
+	}
 
 	ret = pthread_cond_init(&process->condition, NULL);
 	if (ret != 0) {
@@ -377,13 +389,7 @@ int parse_trace_file(char* file_path) {
 
 		print_info("Function name: %s\n", function_name);
 
-		ret = define_exec_function(&processes[num_processes], function_name);
-		if (ret != 0) {
-			err_msg = err_msg ? err_msg : "Error defining exec function";
-			goto close_file;
-		}
-
-		ret = process_init(&processes[num_processes], name, deadline, start_time, burst_time);
+		ret = process_init(&processes[num_processes], name, function_name, deadline, start_time, burst_time);
 		if (ret != 0) {
 			err_msg = err_msg ? err_msg : "Error initializing process";
 			goto close_file;
@@ -436,29 +442,9 @@ void sort_processes() {
 	sort_inc_processes(processes, num_processes);
 }
 
-void define_quantums() {
-	switch (scheduler_algorithm) {
-		case SHORTEST_FIRST:
-			break;
-		case PRIORITY:
-			u32 current_quantum = PRIORITY_START_QUANTUM_USEC;
-			for (int i = (int)(num_processes - 1); i >= 0; i--) {
-				processes[i].quantum_usec = current_quantum;
-				current_quantum += PRIORITY_QUANTUM_INCREMENT_USEC;
-			}
-			break;
-		case ROUND_ROBIN:
-			for (u32 i = 0; i < num_processes; i++)
-				processes[i].quantum_usec = ROUND_ROBIN_QUANTUM_USEC;
-			break;
-	}
-}
-
 void apply_priorities() {
 	sort_processes();
 	print_info("Sorting finished\n");
-	define_quantums();
-	print_info("Quanta defined\n");
 }
 
 int create_process_thread(struct process *process) {
@@ -559,12 +545,14 @@ int start_shortest_first_scheduler() {
 		if (ret == 0 && time2.tv_sec - scheduler_start_time.tv_sec < process->deadline_sec) {
 			print_info("Process %s finished in time :)\n", process->name);
 			process->state = SUCCESS;
+			finished_processes += 1;
 		}
 		else if(ret == 0) {
 			print_info("Process %s finished but not following deadline :(\n",
 						process->name);
 
 			process->state = DEADLINE;
+			finished_processes += 1;
 		}
 		else {
 			print_info("Process %s didn't finish in time :(\n", process->name);
@@ -575,10 +563,10 @@ int start_shortest_first_scheduler() {
 			}
 
 			process->state = CANCELLED;
+			finished_processes += 1;
 		}
 
 		context_switchs += 1;
-		finished_processes += 1;
 		process->real_end_time = time2.tv_sec - scheduler_start_time.tv_sec;
 		process->thread = 0;
 
@@ -715,6 +703,125 @@ int start_round_robin_scheduler() {
 	return 0;
 }
 
+int start_priority_scheduler() {
+	int ret = 0;
+
+	struct process *process = NULL;
+
+	struct timeval scheduler_start_time = {};
+	struct timeval time1 = {};
+	struct timeval time2 = {};
+
+	u64 scheduler_seconds = 0;
+	u64 delta_time_usec = 0;
+	u32 finished_processes = 0;
+	u32 i = 0;
+
+	float alpha = 0;
+
+	gettimeofday(&scheduler_start_time, NULL);
+
+	while(finished_processes < num_processes) {
+		process = &processes[i];
+
+		ret = gettimeofday(&time1, NULL);
+		if (ret != 0) {
+			err_msg = "Error getting time";
+			return ret;
+		}
+
+		scheduler_seconds = (time1.tv_sec - scheduler_start_time.tv_sec);
+
+		if(process_is_not_ready(process, scheduler_seconds)) {
+			i = (i + 1) % num_processes;
+			continue;
+		};
+
+		if (process_has_started(process)) {
+			resume_process(process);
+		}
+		else {
+			ret = create_process_thread(process);
+			process->real_start_time = scheduler_seconds;
+			if (ret) {
+				err_msg = "Error creating process thread";
+				return ret;
+			}
+		}
+
+		process->state = RUNNING;
+
+		/* Quantum increases proportionally with how near the deadline is */
+		alpha = (float)scheduler_seconds / process->deadline_sec;
+		process->quantum_usec = min(GENERAL_DEFAULT_QUANTUM * (1 - alpha) +
+								    alpha * PRIORITY_MAX_QUANTUM_USEC,
+									PRIORITY_MAX_QUANTUM_USEC);
+
+		usleep(process->quantum_usec);
+
+		ret = gettimeofday(&time2, NULL);
+		if (ret != 0) {
+			err_msg = "Error getting time";
+			return ret;
+		}
+
+		scheduler_seconds = (time2.tv_sec - scheduler_start_time.tv_sec);
+
+		delta_time_usec = get_delta_time_usec(time1, time2);
+		process->current_burst_time_usec += delta_time_usec;
+
+		print_info("Process %s used %ld usecs of processing time\n",
+					process->name, delta_time_usec);
+
+		if(process_has_finished(process)) {
+			print_info("Process %s finished in time %ld secs and %ld usecs, while deadline was %d secs\n",
+					process->name,
+					time2.tv_sec - scheduler_start_time.tv_sec,
+					time2.tv_usec,
+					process->deadline_sec);
+
+			if(scheduler_seconds < process->deadline_sec) {
+				process->state = SUCCESS;
+				print_info("Process %s finished in time :)\n", process->name);
+			}
+			else {
+				process->state = DEADLINE;
+				print_info("Process %s finished but not following deadline :(\n", process->name);
+			}
+
+			process->thread = 0;
+			process->real_end_time = scheduler_seconds;
+			process->finished = 1;
+			finished_processes += 1;
+		}
+		else if(process_exploded_burst_time(process)) {
+			print_info("Process %s didn't finish in time :(\n", process->name);
+			ret = pthread_cancel(process->thread);
+			if (ret != 0) {
+				err_msg = "Error cancelling process";
+				return ret;
+			}
+
+			process->state = CANCELLED;
+			process->thread = 0;
+			process->real_end_time = scheduler_seconds;
+			process->finished = 1;
+			finished_processes += 1;
+		}
+		else {
+			process->state = READY;
+			suspend_process(process);
+		}
+
+		/* Even when there is only one process to finish, it will be considered
+		 * a context switch, once the process is being suspended */
+		context_switchs += 1;
+		i = (i + 1) % num_processes;
+	}
+
+	return 0;
+}
+
 void clear_screen(u32 *num_lines) {
 	/* Clear current line */
 	printf("\33[2K\r");
@@ -748,13 +855,11 @@ void* print_loop(void* arg) {
 		   MAX_PROCESSES);
 
 	if(scheduler_algorithm == PRIORITY) {
-		printf(CYN "  PRIORITY START QUANTUM: %d\n" \
-			   "  PRIORITY QUANTUM INCREMENT: %d\n" RESET,
-			   PRIORITY_START_QUANTUM_USEC,
-			   PRIORITY_QUANTUM_INCREMENT_USEC);
+		printf(CYN "  PRIORITY START QUANTUM: %d\n" RESET,
+			   GENERAL_DEFAULT_QUANTUM);
 	}
 	else if(scheduler_algorithm == ROUND_ROBIN) {
-		printf(CYN "  ROUND ROBIN QUANTUM: %d\n" RESET, ROUND_ROBIN_QUANTUM_USEC);
+		printf(CYN "  ROUND ROBIN QUANTUM: %d\n" RESET, GENERAL_DEFAULT_QUANTUM);
 	}
 
 	printf(MAG "\n====================== DICTIONARY ======================\n\n" \
@@ -834,14 +939,14 @@ void* print_loop(void* arg) {
 	}
 }
 
+int start_prints() {
+	return pthread_create(&print_loop_thread, NULL, print_loop, NULL);
+}
+
 int start_scheduler() {
 	int ret = 0;
 
 	print_info("Starting scheduler\n");
-
-	if(!DEBUG_MODE) {
-		pthread_create(&print_loop_thread, NULL, print_loop, NULL);
-	}
 
 	switch (scheduler_algorithm) {
 		case SHORTEST_FIRST:
@@ -859,7 +964,7 @@ int start_scheduler() {
 			}
 			break;
 		case PRIORITY:
-			start_round_robin_scheduler();
+			start_priority_scheduler();
 			if (ret != 0) {
 				err_msg = err_msg ? err_msg : "Error running round robin scheduler";
 				return ret;
@@ -900,20 +1005,13 @@ int main(int argc, char *argv[])
 {
 	int ret = 0;
 
-	/*
-	 * $1 - Scheduler algorithm
-	 * 1. Shortest Job First
-	 * 2. Round-Robin
-	 * 3. Escalonamento com prioridade (usando o deadline como crit´erio para definir a quantidade de
-	 * $2 - Trace file
-	 * $3 - Output file
-	 * quantums dada a cada processo)
-	 */
-
-	if (argc != 4) {
+	if (argc < 4) {
 		err_msg = "Invalid number of arguments";
 		ret = -EINVAL;
 		goto error;
+	}
+	if(argc > 4 && strcmp(argv[4], "-s") == 0) {
+		SILENT_MODE = 1;
 	}
 
 	select_algorithm(argv[1]);
@@ -934,6 +1032,15 @@ int main(int argc, char *argv[])
 	}
 
 	apply_priorities();
+
+	if(!SILENT_MODE && !DEBUG_MODE) {
+		ret = start_prints();
+		if (ret != 0) {
+			err_msg = err_msg ? err_msg : "Error starting print loop";
+			goto error;
+		}
+	}
+
 	ret = start_scheduler();
 	if (ret != 0) {
 		err_msg = err_msg ? err_msg : "Error starting scheduler";
