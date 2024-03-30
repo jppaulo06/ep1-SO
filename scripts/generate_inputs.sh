@@ -25,6 +25,7 @@ if [[ ! -d "$INPUT_DIR" ]]; then
 fi
 
 for num_processes in "${NUM_PROCESSES[@]}"; do
+
 	max_init=$(( num_processes * MAX_INIT_MULTIPLIER ))
 	output_file="${INPUT_DIR}/${num_processes}.trace"
 	echo -n "" > "$output_file"
