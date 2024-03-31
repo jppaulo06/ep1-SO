@@ -10,6 +10,7 @@
 #include <time.h>
 #include <sys/time.h>
 #include <ctype.h>
+#include <sched.h>
 
 /*
  * =====================================
@@ -447,6 +448,21 @@ void apply_priorities() {
 	print_info("Sorting finished\n");
 }
 
+int set_affinity() {
+	cpu_set_t mask;
+	int ret = 0;
+
+	CPU_ZERO(&mask);
+	CPU_SET(0, &mask);
+
+	ret = sched_setaffinity(0, sizeof(mask), &mask);
+	if (ret != 0) {
+		err_msg = "Error setting affinity for CPU 0. Is it available?";
+		return ret;
+	}
+	return 0;
+}
+
 int create_process_thread(struct process *process) {
 	print_info("============= Starting process %s =============\n", process->name);
 	return pthread_create(&process->thread, NULL, process->exec_function, (void*)process);
@@ -597,10 +613,13 @@ int start_round_robin_scheduler() {
 	int ret = 0;
 
 	struct process *process = NULL;
+	void* process_ret = NULL;
 
 	struct timeval scheduler_start_time = {};
 	struct timeval time1 = {};
 	struct timeval time2 = {};
+
+	struct timespec wait_time_timespec = {};
 
 	u64 scheduler_seconds = 0;
 	u64 delta_time_usec = 0;
@@ -639,7 +658,16 @@ int start_round_robin_scheduler() {
 
 		process->state = RUNNING;
 
-		usleep(process->quantum_usec);
+		wait_time_timespec.tv_sec = time1.tv_sec;
+		if(time1.tv_usec + process->quantum_usec >= SEC_IN_USEC) {
+			wait_time_timespec.tv_sec += 1;
+			wait_time_timespec.tv_nsec = (time1.tv_usec + process->quantum_usec - SEC_IN_USEC) * USEC_IN_NSEC;
+		}
+		else {
+			wait_time_timespec.tv_nsec = (time1.tv_usec + process->quantum_usec) * USEC_IN_NSEC;
+		}
+
+		pthread_timedjoin_np(process->thread, &process_ret, &wait_time_timespec);
 
 		ret = gettimeofday(&time2, NULL);
 		if (ret != 0) {
@@ -708,10 +736,13 @@ int start_priority_scheduler() {
 	int ret = 0;
 
 	struct process *process = NULL;
+	void* process_ret = NULL;
 
 	struct timeval scheduler_start_time = {};
 	struct timeval time1 = {};
 	struct timeval time2 = {};
+
+	struct timespec wait_time_timespec = {};
 
 	u64 scheduler_seconds = 0;
 	u64 delta_time_usec = 0;
@@ -753,12 +784,21 @@ int start_priority_scheduler() {
 		process->state = RUNNING;
 
 		/* Quantum increases proportionally with how near the deadline is */
-		alpha = (float)scheduler_seconds / process->deadline_sec;
+		alpha = (float)(scheduler_seconds - process->real_start_time) / (process->deadline_sec - process->real_start_time);
 		process->quantum_usec = min(GENERAL_DEFAULT_QUANTUM * (1 - alpha) +
 								    alpha * PRIORITY_MAX_QUANTUM_USEC,
 									PRIORITY_MAX_QUANTUM_USEC);
 
-		usleep(process->quantum_usec);
+		wait_time_timespec.tv_sec = time1.tv_sec;
+		if(time1.tv_usec + process->quantum_usec >= SEC_IN_USEC) {
+			wait_time_timespec.tv_sec += 1;
+			wait_time_timespec.tv_nsec = (time1.tv_usec + process->quantum_usec - SEC_IN_USEC) * USEC_IN_NSEC;
+		}
+		else {
+			wait_time_timespec.tv_nsec = (time1.tv_usec + process->quantum_usec) * USEC_IN_NSEC;
+		}
+
+		pthread_timedjoin_np(process->thread, &process_ret, &wait_time_timespec);
 
 		ret = gettimeofday(&time2, NULL);
 		if (ret != 0) {
@@ -1041,6 +1081,10 @@ int main(int argc, char *argv[])
 			goto error;
 		}
 	}
+
+	ret = set_affinity();
+	if (ret != 0)
+		goto error;
 
 	ret = start_scheduler();
 	if (ret != 0) {

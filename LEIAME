@@ -1,0 +1,23 @@
+EP1 - SISTEMAS OPERACIONAIS
+
+Nome: João Paulo Pereira da Silva
+NUSP: 13695000
+
+=========== COMO COMPILAR ===========
+
+Utilizando o Makefile do EP, para compilar ambos os programas, apenas execute ´make´ no bash
+Com isso, o make será responsável por compilar tanto o arquivo new-shell.c, quanto o scheduler.c
+
+=========== COMO EXECUTAR ===========
+
+A saída das compilações deve se dar em dois binários: new-shell e scheduler
+Dessa maneira, para executar o new-shell, rode, no bash
+
+./new-shell
+
+De maneira semelhante, para executar o scheduler, execute
+
+./scheduler <arg1> <arg2> <arg3>
+
+Em que arg1, arg2 e arg3 são os argumentos passados para o programa conforme
+pedido no enunciado.

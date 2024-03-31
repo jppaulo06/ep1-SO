@@ -86,6 +86,8 @@ def get_averages_for_algorithm(algorithm: str, processes: Processes):
 
     tests_path = os.path.join(OUTPUT_DIR, algorithm, str(processes.size))
 
+    num_files = 0
+
     for test_file in os.listdir(tests_path):
         with open(os.path.join(tests_path, test_file), 'r') as file:
             lines = file.readlines()
@@ -93,16 +95,17 @@ def get_averages_for_algorithm(algorithm: str, processes: Processes):
                 splited_line = line.split()
 
                 process_name = splited_line[0]
-                deadline = int(splited_line[2])
+                final_time = int(splited_line[2])
 
-                if deadline <= processes.parsed[process_name].deadline:
+                if final_time >= processes.parsed[process_name].deadline:
                     deadline_sum += 1
 
             last_line = lines[len(lines) - 1]
             context_switch_sum += int(last_line)
+            num_files += 1
 
-    deadline_average = deadline_sum / processes.size
-    context_switch_average = context_switch_sum / processes.size
+    deadline_average = deadline_sum / (processes.size * num_files)
+    context_switch_average = context_switch_sum / num_files
 
     return deadline_average, context_switch_average
 
